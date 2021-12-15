@@ -30,10 +30,13 @@ import torch.nn.functional as F
 from torchvision import datasets, transforms
 from torchvision import models as torchvision_models
 
+from features_classification.datasets import cbis_ddsm
+
 import utils
 import vision_transformer as vits
 from vision_transformer import DINOHead
 
+print(torch.cuda.is_available())
 torchvision_archs = sorted(name for name in torchvision_models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(torchvision_models.__dict__[name]))
@@ -126,6 +129,12 @@ def get_args_parser():
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
+
+    # My arguments
+    parser.add_argument("-d", "--dataset",
+                        help="Name of the available datasets")
+    parser.add_argument("--tr", "--train_rate", dest="train_rate", type=float, default=1,
+                    help="Part of the dataset that you want to train")
     return parser
 
 
@@ -142,7 +151,15 @@ def train_dino(args):
         args.local_crops_scale,
         args.local_crops_number,
     )
-    dataset = datasets.ImageFolder(args.data_path, transform=transform)
+    # dataset = datasets.ImageFolder(args.data_path, transform=transform)
+
+    data_transforms = {
+        'train': transform,
+        'val': transform,
+        'test': transform
+    }
+    _, dataset, _ = cbis_ddsm.initialize(args, data_transforms)
+    dataset = dataset['train']
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
         dataset,
@@ -152,6 +169,7 @@ def train_dino(args):
         pin_memory=True,
         drop_last=True,
     )
+    print(len(data_loader))
     print(f"Data loaded: there are {len(dataset)} images.")
 
     # ============ building student and teacher networks ... ============
@@ -303,7 +321,10 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
                     fp16_scaler, args):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
-    for it, (images, _) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+    # for it, (images, _) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+    for it, data_info in enumerate(metric_logger.log_every(data_loader, 10, header)):
+        images = data_info['image']
+
         # update weight decay and learning rate according to their schedule
         it = len(data_loader) * epoch + it  # global training iteration
         for i, param_group in enumerate(optimizer.param_groups):
