@@ -30,7 +30,8 @@ import torch.nn.functional as F
 from torchvision import datasets, transforms
 from torchvision import models as torchvision_models
 
-from features_classification.datasets import cbis_ddsm
+from features_classification.datasets import cbis_ddsm, combined_datasets
+# from features_classification.datasets import cbis_ddsm
 
 import utils
 import vision_transformer as vits
@@ -118,6 +119,10 @@ def get_args_parser():
     parser.add_argument('--local_crops_scale', type=float, nargs='+', default=(0.05, 0.4),
         help="""Scale range of the cropped image before resizing, relatively to the origin image.
         Used for small local view cropping of multi-crop.""")
+    parser.add_argument('--global_crops_size', type=int, default=224,
+                        help="Size of the global crops")
+    parser.add_argument('--local_crops_size', type=int, default=96,
+                        help="Size of the local crops")
 
     # Misc
     parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
@@ -150,6 +155,8 @@ def train_dino(args):
         args.global_crops_scale,
         args.local_crops_scale,
         args.local_crops_number,
+        args.global_crops_size,
+        args.local_crops_size
     )
     # dataset = datasets.ImageFolder(args.data_path, transform=transform)
 
@@ -158,7 +165,12 @@ def train_dino(args):
         'val': transform,
         'test': transform
     }
-    _, dataset, _ = cbis_ddsm.initialize(args, data_transforms)
+
+    if args.dataset in 'five_classes_mass_calc_pathology':
+        _, dataset, _ = cbis_ddsm.initialize(args, data_transforms)
+    elif args.dataset in 'combined_datasets':
+        _, dataset, _ = combined_datasets.initialize(args, data_transforms)
+
     dataset = dataset['train']
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
@@ -169,7 +181,6 @@ def train_dino(args):
         pin_memory=True,
         drop_last=True,
     )
-    print(len(data_loader))
     print(f"Data loaded: there are {len(dataset)} images.")
 
     # ============ building student and teacher networks ... ============
@@ -438,7 +449,8 @@ class DINOLoss(nn.Module):
 
 
 class DataAugmentationDINO(object):
-    def __init__(self, global_crops_scale, local_crops_scale, local_crops_number):
+    def __init__(self, global_crops_scale, local_crops_scale, local_crops_number,
+                 global_crops_size, local_crops_size):
         flip_and_color_jitter = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply(
@@ -452,16 +464,17 @@ class DataAugmentationDINO(object):
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
 
+        print(global_crops_size, local_crops_size)
         # first global crop
         self.global_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(global_crops_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             utils.GaussianBlur(1.0),
             normalize,
         ])
         # second global crop
         self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=global_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(global_crops_size, scale=global_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             utils.GaussianBlur(0.1),
             utils.Solarization(0.2),
@@ -470,7 +483,7 @@ class DataAugmentationDINO(object):
         # transformation for the local small crops
         self.local_crops_number = local_crops_number
         self.local_transfo = transforms.Compose([
-            transforms.RandomResizedCrop(96, scale=local_crops_scale, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(local_crops_size, scale=local_crops_scale, interpolation=Image.BICUBIC),
             flip_and_color_jitter,
             utils.GaussianBlur(p=0.5),
             normalize,
